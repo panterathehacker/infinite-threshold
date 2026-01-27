@@ -1,0 +1,5 @@
+{
+  "name": "Infinite Threshold",
+  "description": "An infinite hallway where every door opens into a new, AI-generated 3D world using Gemini 3 Pro and World Labs Marble.",
+  "requestFramePermissions": []
+}
