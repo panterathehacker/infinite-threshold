@@ -1,29 +1,45 @@
 import { WORLD_LABS_API_KEY } from '../constants';
 
 const API_BASE = "https://api.worldlabs.ai/marble/v1";
-const PROXY_1 = "https://corsproxy.io/?";
-const PROXY_2 = "https://api.allorigins.win/raw?url=";
+// Use a public CORS proxy to bypass browser-side CORS restrictions for this demo.
+const PROXY_BASE = "https://corsproxy.io/?";
 
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+async function getErrorDetails(res: Response): Promise<string> {
+    try {
+        const text = await res.text();
+        // If the response is HTML (like Cloudflare 5xx pages), return a generic error instead of dumping HTML
+        if (text.trim().startsWith('<') || text.includes('<!DOCTYPE html>')) {
+            return `Service Unavailable (${res.status})`;
+        }
+        return text;
+    } catch {
+        return `Unknown Error (${res.status})`;
+    }
+}
+
 async function fetchWithProxy(endpoint: string, options: RequestInit) {
+  // Construct full URL. 
   const url = `${API_BASE}${endpoint}`;
   
-  // 1. Try Direct (Best case)
+  // Strategy: Try direct first (if API allows CORS), then fallback to proxy.
   try {
     const res = await fetch(url, options);
-    if (res.ok) return res;
-  } catch (e) {}
+    return res;
+  } catch (e) {
+    // console.log("[WorldLabs] Direct fetch failed (likely CORS). Switching to Proxy.");
+  }
 
-  // 2. Try Proxy 1
+  // Fallback: Proxy
+  const proxyUrl = `${PROXY_BASE}${encodeURIComponent(url)}`;
   try {
-    const res = await fetch(`${PROXY_1}${encodeURIComponent(url)}`, options);
-    if (res.ok) return res;
-  } catch (e) {}
-
-  // 3. Try Proxy 2
-  const res = await fetch(`${PROXY_2}${encodeURIComponent(url)}`, options);
-  return res;
+    const res = await fetch(proxyUrl, options);
+    return res;
+  } catch (e) {
+    console.error("[WorldLabs] Proxy fetch also failed:", e);
+    throw e;
+  }
 }
 
 async function startGeneration(theme: string) {
@@ -42,74 +58,130 @@ async function startGeneration(theme: string) {
     })
   });
 
-  if (!res.ok) throw new Error(`Generation trigger failed (${res.status})`);
+  if (!res.ok) throw new Error(`Generation trigger failed: ${await getErrorDetails(res)}`);
   return res.json();
 }
 
 async function pollOperation(operationId: string, onStatusUpdate: (msg: string) => void) {
   const startTime = Date.now();
-  const maxTime = 20 * 60 * 1000;
+  const maxTime = 20 * 60 * 1000; 
 
   while (Date.now() - startTime < maxTime) {
-    onStatusUpdate(`Constructing Reality... (${Math.floor((Date.now() - startTime)/1000)}s)`);
+    const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
+    const minutes = Math.floor(elapsedSeconds / 60);
+    const seconds = elapsedSeconds % 60;
+    const timeStr = `${minutes}m ${seconds}s`;
+
+    onStatusUpdate(`Constructing Reality... (${timeStr} elapsed)`);
     
     let res;
     try {
-        res = await fetchWithProxy(`/operations/${operationId}?t=${Date.now()}`, {
+        const endpoint = `/operations/${operationId}?t=${Date.now()}`;
+        res = await fetchWithProxy(endpoint, {
             method: 'GET',
             headers: { 'WLT-Api-Key': WORLD_LABS_API_KEY }
         });
     } catch (e) {
+        console.warn("Polling network error, retrying...", e);
         await wait(5000);
         continue;
     }
 
     if (!res.ok) {
-        if (res.status >= 500 || res.status === 404) { await wait(5000); continue; }
-        throw new Error(`Polling failed: ${res.status}`);
+        if (res.status === 404 || res.status === 522 || res.status === 502) {
+             // 404 means not ready yet in some APIs, or actually missing. 
+             // 522/502 are server/proxy errors, likely transient. Retry.
+             await wait(5000);
+             continue;
+        }
+        throw new Error(`Polling failed: ${await getErrorDetails(res)}`);
     }
     
-    const data = await res.json();
+    // Check if response is JSON
+    const contentType = res.headers.get("content-type");
+    if (contentType && contentType.includes("text/html")) {
+        // Proxy returned HTML error despite status 200 (rare but happens with some captive portals/proxies)
+        console.warn("Received HTML instead of JSON during polling, retrying...");
+        await wait(5000);
+        continue;
+    }
+
+    let data;
+    try {
+        data = await res.json();
+    } catch (e) {
+        throw new Error("Invalid JSON response from server");
+    }
+    
     if (data.done) {
-      if (data.error) throw new Error(`Generation error: ${JSON.stringify(data.error)}`);
+      if (data.error) {
+        throw new Error(`Generation logic error: ${JSON.stringify(data.error)}`);
+      }
       return data.response;
     }
+    
+    if (data.metadata?.progress?.description) {
+         // Optionally update status with detailed description
+    }
+
     await wait(10000);
   }
   throw new Error("Generation timed out.");
 }
 
-// Deep search helper for URLs
-function findUrlByExtension(obj: any, ext: string): string | null {
-  if (!obj) return null;
-  if (typeof obj === 'string' && obj.toLowerCase().includes(ext)) return obj;
-  if (typeof obj === 'object') {
-    for (const key in obj) {
-      const found = findUrlByExtension(obj[key], ext);
-      if (found) return found;
-    }
-  }
-  return null;
-}
-
 export const generateWorldFromText = async (
   theme: string,
   setStatus: (msg: string) => void
-): Promise<{ splatUrl: string; imageUrl: string }> => {
+): Promise<{ splatUrl: string; panoUrl?: string; colliderUrl?: string; imageUrl: string; webUrl?: string }> => {
   try {
     setStatus("Initiating World Protocol...");
-    const operation = await startGeneration(theme);
-    const worldData = await pollOperation(operation.operation_id, setStatus);
     
-    // Aggressive extraction
-    let splatUrl = findUrlByExtension(worldData, '.spz');
-    let imageUrl = findUrlByExtension(worldData, 'thumbnail') || findUrlByExtension(worldData, '.webp') || findUrlByExtension(worldData, '.jpg');
+    const operation = await startGeneration(theme);
+    const operationId = operation.operation_id;
+    console.log("Operation started:", operationId);
 
-    console.log("[WorldLabs] Extracted Assets:", { splatUrl, imageUrl });
+    const worldData = await pollOperation(operationId, setStatus);
+    console.log("World Generation Complete:", worldData);
 
-    return { splatUrl: splatUrl || "", imageUrl: imageUrl || "" };
+    const assets = worldData.assets || {};
+    const splats = assets.splats || {};
+    const spzUrls = splats.spz_urls || {}; // Specific structure from user prompt
+    const mesh = assets.mesh || {};
+    const imagery = assets.imagery || {};
+    const links = worldData.links || {};
+    
+    // 1. Splats: Prefer .splat if available (rare in Marble), else fallback to .spz logic
+    // Even if we can't render .spz natively, we pass it through so the UI can decide (or fallback)
+    let splatUrl = "";
+    
+    // Check for standard splat extension first in any flat keys
+    const allSplatValues = Object.values(splats);
+    const standardSplat = allSplatValues.find((v: any) => typeof v === 'string' && v.endsWith('.splat'));
+    
+    if (standardSplat) {
+        splatUrl = standardSplat as string;
+    } else {
+        // Fallback to spz (High Quality > Full Res > Low Quality)
+        splatUrl = spzUrls['500k'] || spzUrls.full_res || spzUrls['100k'] || "";
+        
+        // Try top level fallback
+        if (!splatUrl && splats['500k']) splatUrl = splats['500k'];
+    }
+
+    // 2. Aux Assets
+    const panoUrl = imagery.pano_url;
+    const colliderUrl = mesh.collider_mesh_url;
+    const imageUrl = assets.thumbnail_url || imagery.pano_url || "";
+    const webUrl = links.web || "";
+
+    if (!splatUrl && !panoUrl && !imageUrl) {
+        throw new Error("Resulting world object missing content");
+    }
+
+    return { splatUrl, panoUrl, colliderUrl, imageUrl, webUrl };
+
   } catch (error) {
-    console.error("World Labs Error:", error);
+    console.error("World Labs Pipeline Error:", error);
     throw error;
   }
 };

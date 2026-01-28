@@ -1,6 +1,5 @@
 import React, { Suspense, useEffect } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { Loader } from '@react-three/drei';
 import { useStore } from './store';
 import { GameState } from './types';
 import { ApiKeySelector } from './components/ApiKeySelector';
@@ -12,13 +11,16 @@ import { PlayerController } from './components/PlayerController';
 const App: React.FC = () => {
   const gameState = useStore((state) => state.gameState);
 
-  // Initial check for key selection state (optional optimization, 
-  // but ApiKeySelector handles the prompt flow best)
+  // Initial check for key selection state
   useEffect(() => {
     const checkKey = async () => {
-       if (window.aistudio && await window.aistudio.hasSelectedApiKey()) {
-           useStore.getState().setGameState(GameState.HALLWAY);
-       }
+      try {
+         if (window.aistudio && await window.aistudio.hasSelectedApiKey()) {
+             useStore.getState().setGameState(GameState.HALLWAY);
+         }
+      } catch (e) {
+         console.warn("API Key check skipped or failed", e);
+      }
     };
     checkKey();
   }, []);
@@ -34,7 +36,8 @@ const App: React.FC = () => {
         
         <Canvas shadows camera={{ fov: 75 }}>
           <Suspense fallback={null}>
-            <fog attach="fog" args={['#000000', 5, 30]} />
+            {/* Magical Fog Color */}
+            <fog attach="fog" args={['#1a0b2e', 5, 40]} />
             <ambientLight intensity={0.2} />
             
             {/* Conditional Rendering of Scenes */}
@@ -45,9 +48,6 @@ const App: React.FC = () => {
             <PlayerController />
           </Suspense>
         </Canvas>
-        
-        {/* Drei's Loader overlay for assets */}
-        <Loader />
       </div>
     </>
   );

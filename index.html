@@ -16,19 +16,27 @@
   <script type="importmap">
 {
   "imports": {
-    "react/": "https://esm.sh/react@^19.2.4/",
-    "react": "https://esm.sh/react@^19.2.4",
-    "@react-three/drei": "https://esm.sh/@react-three/drei@^10.7.7",
-    "@react-three/fiber": "https://esm.sh/@react-three/fiber@^9.5.0",
-    "@google/genai": "https://esm.sh/@google/genai@^1.38.0",
-    "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
-    "zustand": "https://esm.sh/zustand@^5.0.10",
-    "three": "https://esm.sh/three@^0.182.0"
+    "react": "https://esm.sh/react@18.3.1",
+    "react/": "https://esm.sh/react@18.3.1/",
+    "react-dom": "https://esm.sh/react-dom@18.3.1",
+    "react-dom/": "https://esm.sh/react-dom@18.3.1/",
+    "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
+    "three": "https://esm.sh/three@0.165.0",
+    "@react-three/fiber": "https://esm.sh/@react-three/fiber@8.16.8?external=react,react-dom,three",
+    "@react-three/drei": "https://esm.sh/@react-three/drei@9.108.0?external=react,react-dom,three,@react-three/fiber",
+    "@google/genai": "https://esm.sh/@google/genai@latest",
+    "zustand": "https://esm.sh/zustand@4.5.2?external=react"
   }
 }
 </script>
 </head>
   <body>
     <div id="root"></div>
+    <!-- Polyfill process for environments that don't auto-inject it, preventing crash in services -->
+    <script>
+      if (typeof process === 'undefined') {
+        window.process = { env: { API_KEY: '' } };
+      }
+    </script>
   </body>
 </html>

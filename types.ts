@@ -10,5 +10,19 @@ export interface WorldData {
   id: string;
   theme: string;
   splatUrl: string;
+  panoUrl?: string;
+  colliderUrl?: string;
   imageUrl?: string;
+  webUrl?: string;
+}
+
+declare global {
+  interface AIStudio {
+    openSelectKey: () => Promise<void>;
+    hasSelectedApiKey: () => Promise<boolean>;
+  }
+
+  interface Window {
+    aistudio?: AIStudio;
+  }
 }

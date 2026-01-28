@@ -39,7 +39,8 @@ export const generateWorldImage = async (theme: string): Promise<string> => {
     if (response.candidates && response.candidates.length > 0) {
       for (const part of response.candidates[0].content.parts) {
         if (part.inlineData && part.inlineData.data) {
-          return part.inlineData.data; // Base64 string
+           const mimeType = part.inlineData.mimeType || 'image/png';
+           return `data:${mimeType};base64,${part.inlineData.data}`;
         }
       }
     }
