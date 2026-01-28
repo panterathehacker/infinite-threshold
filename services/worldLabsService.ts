@@ -1,153 +1,115 @@
 import { WORLD_LABS_API_KEY } from '../constants';
 
 const API_BASE = "https://api.worldlabs.ai/marble/v1";
-
-// Helper to convert Base64 to Blob
-const base64ToBlob = async (base64: string): Promise<Blob> => {
-  const base64Clean = base64.replace(/^data:image\/\w+;base64,/, '');
-  const response = await fetch(`data:image/jpeg;base64,${base64Clean}`);
-  return response.blob();
-};
+const PROXY_1 = "https://corsproxy.io/?";
+const PROXY_2 = "https://api.allorigins.win/raw?url=";
 
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-// Step 1: Prepare Upload
-async function prepareUpload() {
-  const res = await fetch(`${API_BASE}/media-assets:prepare_upload`, {
+async function fetchWithProxy(endpoint: string, options: RequestInit) {
+  const url = `${API_BASE}${endpoint}`;
+  
+  // 1. Try Direct (Best case)
+  try {
+    const res = await fetch(url, options);
+    if (res.ok) return res;
+  } catch (e) {}
+
+  // 2. Try Proxy 1
+  try {
+    const res = await fetch(`${PROXY_1}${encodeURIComponent(url)}`, options);
+    if (res.ok) return res;
+  } catch (e) {}
+
+  // 3. Try Proxy 2
+  const res = await fetch(`${PROXY_2}${encodeURIComponent(url)}`, options);
+  return res;
+}
+
+async function startGeneration(theme: string) {
+  const res = await fetchWithProxy(`/worlds:generate`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'WLT-Api-Key': WORLD_LABS_API_KEY
     },
     body: JSON.stringify({
-      file_name: "dream_world.jpg",
-      kind: "image",
-      extension: "jpg"
+      display_name: theme.substring(0, 50),
+      world_prompt: {
+        type: "text",
+        text_prompt: `A high quality 3D explorable world of ${theme}, immersive, detailed, photorealistic.`
+      }
     })
   });
 
-  if (!res.ok) throw new Error(`Prepare upload failed: ${await res.text()}`);
+  if (!res.ok) throw new Error(`Generation trigger failed (${res.status})`);
   return res.json();
 }
 
-// Step 2: Upload Binary
-async function uploadFile(uploadUrl: string, blob: Blob, requiredHeaders: Record<string, string>) {
-  // We must respect the required headers from the prepare_upload step
-  // usually x-goog-content-length-range
-  const headers: Record<string, string> = { ...requiredHeaders };
-  
-  const res = await fetch(uploadUrl, {
-    method: 'PUT',
-    headers: headers,
-    body: blob
-  });
+async function pollOperation(operationId: string, onStatusUpdate: (msg: string) => void) {
+  const startTime = Date.now();
+  const maxTime = 20 * 60 * 1000;
 
-  if (!res.ok) throw new Error(`File upload failed: ${await res.text()}`);
-}
-
-// Step 3: Trigger Generation
-async function startGeneration(mediaAssetId: string, theme: string) {
-  const res = await fetch(`${API_BASE}/worlds:generate`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'WLT-Api-Key': WORLD_LABS_API_KEY
-    },
-    body: JSON.stringify({
-      display_name: theme.substring(0, 30),
-      world_prompt: {
-        type: "image",
-        image_prompt: {
-          source: "media_asset",
-          media_asset_id: mediaAssetId
-        },
-        text_prompt: `A high quality 3D explorable world of ${theme}`
-      }
-    })
-  });
-
-  if (!res.ok) throw new Error(`Generation trigger failed: ${await res.text()}`);
-  return res.json(); // Returns an Operation object
-}
-
-// Step 4: Poll Operation
-async function pollOperation(operationName: string, onStatusUpdate: (msg: string) => void) {
-  // Operation name is usually "operations/123..."
-  // Endpoint is likely https://api.worldlabs.ai/marble/v1/{operationName}
-  const url = `${API_BASE}/${operationName}`;
-  
-  let attempts = 0;
-  const maxAttempts = 60; // 60 * 2s = 2 minutes max
-
-  while (attempts < maxAttempts) {
-    attempts++;
-    onStatusUpdate(`Processing reality geometry... (${attempts*2}s)`);
+  while (Date.now() - startTime < maxTime) {
+    onStatusUpdate(`Constructing Reality... (${Math.floor((Date.now() - startTime)/1000)}s)`);
     
-    const res = await fetch(url, {
-      method: 'GET',
-      headers: { 'WLT-Api-Key': WORLD_LABS_API_KEY }
-    });
-
-    if (!res.ok) throw new Error(`Polling failed: ${await res.text()}`);
-    
-    const data = await res.json();
-    
-    if (data.done) {
-      if (data.error) {
-        throw new Error(`Generation logic error: ${JSON.stringify(data.error)}`);
-      }
-      return data.response; // The completed World object
+    let res;
+    try {
+        res = await fetchWithProxy(`/operations/${operationId}?t=${Date.now()}`, {
+            method: 'GET',
+            headers: { 'WLT-Api-Key': WORLD_LABS_API_KEY }
+        });
+    } catch (e) {
+        await wait(5000);
+        continue;
     }
 
-    await wait(2000);
+    if (!res.ok) {
+        if (res.status >= 500 || res.status === 404) { await wait(5000); continue; }
+        throw new Error(`Polling failed: ${res.status}`);
+    }
+    
+    const data = await res.json();
+    if (data.done) {
+      if (data.error) throw new Error(`Generation error: ${JSON.stringify(data.error)}`);
+      return data.response;
+    }
+    await wait(10000);
   }
-  throw new Error("Generation timed out");
+  throw new Error("Generation timed out.");
 }
 
-export const generateSplatFromImage = async (
-  base64Image: string, 
+// Deep search helper for URLs
+function findUrlByExtension(obj: any, ext: string): string | null {
+  if (!obj) return null;
+  if (typeof obj === 'string' && obj.toLowerCase().includes(ext)) return obj;
+  if (typeof obj === 'object') {
+    for (const key in obj) {
+      const found = findUrlByExtension(obj[key], ext);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+export const generateWorldFromText = async (
   theme: string,
   setStatus: (msg: string) => void
-): Promise<string> => {
+): Promise<{ splatUrl: string; imageUrl: string }> => {
   try {
-    // 1. Prepare
-    setStatus("Initiating Asset Upload...");
-    const prepData = await prepareUpload();
-    const { upload_url, required_headers } = prepData.upload_info;
-    const mediaAssetId = prepData.media_asset.id;
-
-    // 2. Upload
-    setStatus("Uploading Neural Dream...");
-    const imageBlob = await base64ToBlob(base64Image);
-    await uploadFile(upload_url, imageBlob, required_headers);
-
-    // 3. Generate
-    setStatus("Requesting Construction...");
-    const operation = await startGeneration(mediaAssetId, theme);
-    console.log("Operation started:", operation.name);
-
-    // 4. Poll
-    const worldData = await pollOperation(operation.name, setStatus);
-    console.log("World Generation Complete:", worldData);
-
-    // 5. Extract URL
-    // The world object structure needs to be checked. Assuming .links.spz or similar based on previous attempts
-    // If exact structure is unknown, we check common paths.
-    // Based on user prompt: "completed operation’s response field will contain the generated World"
+    setStatus("Initiating World Protocol...");
+    const operation = await startGeneration(theme);
+    const worldData = await pollOperation(operation.operation_id, setStatus);
     
-    // Check known paths for Splat URL
-    if (worldData.links?.spz) return worldData.links.spz;
-    if (worldData.links?.ply) return worldData.links.ply;
-    if (worldData.links?.gaussian_splat) return worldData.links.gaussian_splat;
-    
-    // Fallback if structure is different
-    if (worldData.spz) return worldData.spz;
-    if (worldData.url) return worldData.url;
+    // Aggressive extraction
+    let splatUrl = findUrlByExtension(worldData, '.spz');
+    let imageUrl = findUrlByExtension(worldData, 'thumbnail') || findUrlByExtension(worldData, '.webp') || findUrlByExtension(worldData, '.jpg');
 
-    throw new Error("Resulting world object missing .links.spz URL");
+    console.log("[WorldLabs] Extracted Assets:", { splatUrl, imageUrl });
 
+    return { splatUrl: splatUrl || "", imageUrl: imageUrl || "" };
   } catch (error) {
-    console.error("World Labs Pipeline Error:", error);
+    console.error("World Labs Error:", error);
     throw error;
   }
 };

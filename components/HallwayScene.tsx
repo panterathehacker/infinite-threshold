@@ -3,8 +3,8 @@ import { useFrame, useThree } from '@react-three/fiber';
 import { Text } from '@react-three/drei';
 import * as THREE from 'three';
 import { useStore } from '../store';
-import { generateWorldImage } from '../services/geminiService';
-import { generateSplatFromImage } from '../services/worldLabsService';
+// Removed Gemini import as we are going direct text-to-3D
+import { generateWorldFromText } from '../services/worldLabsService';
 import { DOOR_POSITION_Z, INTERACTION_DISTANCE, WORLD_THEMES, HALLWAY_LENGTH } from '../constants';
 import { GameState } from '../types';
 
@@ -44,37 +44,28 @@ export const HallwayScene: React.FC = () => {
     
     const randomTheme = WORLD_THEMES[Math.floor(Math.random() * WORLD_THEMES.length)];
     const worldId = Date.now().toString();
-    let base64Image = "";
 
-    // 1. Dream (Image Gen)
+    // Direct Text-to-3D Generation (World Labs)
+    // This process takes 5-7 minutes, so we rely on the service to update status messages
+    let worldResult = { splatUrl: "", imageUrl: "" };
+    
     try {
-      setStatusMessage(`Dreaming of ${randomTheme}...`);
-      base64Image = await generateWorldImage(randomTheme);
+      setStatusMessage(`Initiating Neural Link to World Labs...`);
+      worldResult = await generateWorldFromText(randomTheme, (msg) => setStatusMessage(msg));
     } catch (error: any) {
-      console.error("Gemini Error:", error);
-      setStatusMessage(`Neural Link Failed: ${error.message || "Unknown Error"}`);
+      console.error("World Generation failed:", error);
+      setStatusMessage(`Reality Construction Failed: ${error.message}.`);
       setGameState(GameState.ERROR);
       isGenerating.current = false;
       return;
     }
-
-    // 2. Reality (Splat Gen) - With Fallback
-    let splatUrl = "";
-    try {
-      // We pass setStatusMessage so the service can update the UI during the long upload/poll process
-      splatUrl = await generateSplatFromImage(base64Image, randomTheme, (msg) => setStatusMessage(msg));
-    } catch (error: any) {
-      console.warn("World Labs generation failed, falling back to 2D:", error);
-      setStatusMessage(`Reality Construction Failed: ${error.message}. Fallback initialized.`);
-      await new Promise(r => setTimeout(r, 2000)); // Pause to let user read
-    }
     
-    // 3. Enter
+    // Enter World
     setCurrentWorld({
       id: worldId,
       theme: randomTheme,
-      splatUrl: splatUrl,
-      imageUrl: `data:image/png;base64,${base64Image}`
+      splatUrl: worldResult.splatUrl,
+      imageUrl: worldResult.imageUrl || "" // Thumbnail from WorldLabs
     });
     
     setStatusMessage("Materializing...");
